@@ -10,7 +10,7 @@ import json
 import random
 import sqlite3
 # Render.com webhook support
-import uvicorn  # если используете FastAPI wrapper
+# import uvicorn  # если используете FastAPI wrapper
 
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
