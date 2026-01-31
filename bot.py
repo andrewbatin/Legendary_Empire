@@ -723,7 +723,12 @@ def main():
     application.add_error_handler(error_handler)
     
     logger.info("🚀 Legendary Empire Bot запущен!")
-    import os
+
+
+if __name__ == "__main__":
+    main()
+    
+import os
 PORT = int(os.environ.get('PORT', 8080))
 
 application.run_webhook(
@@ -732,6 +737,3 @@ application.run_webhook(
     url_path=BOT_TOKEN,
     webhook_url=f"https://legendary-empire.onrender.com/{BOT_TOKEN}"
 )
-
-if __name__ == "__main__":
-    main()
