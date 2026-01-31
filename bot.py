@@ -714,4 +714,30 @@ def main():
     )
 
 if __name__ == "__main__":
-    main()
+    # 🔥 Render.com webhook (БЕЗ uvicorn!)
+    PORT = int(os.environ.get('PORT', 8080))
+    
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Добавьте все ваши handlers (ConversationHandler уже есть)
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler('start', start)],
+        states={
+            AWAITING_SUBSCRIPTION: [CallbackQueryHandler(handle_subscription_check, pattern='^check_subscription$')],
+            # ... остальные states из вашего кода
+        },
+        fallbacks=[CommandHandler('start', start)],
+    )
+    
+    application.add_handler(conv_handler)
+    application.add_error_handler(error_handler)
+    
+    logger.info("🚀 Legendary Empire Bot запущен!")
+    
+    # ✅ НАТИВНЫЙ WEBHOOK (НЕ нужен uvicorn)
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'your-bot.onrender.com')}/{BOT_TOKEN}"
+    )
