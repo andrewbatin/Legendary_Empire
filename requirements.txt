@@ -1,11 +1,12 @@
 # Telegram Bot API
-python-telegram-bot==20.5
+python-telegram-bot==20.7
 
 # Работа с переменными окружения
 python-dotenv==1.0.0
 
 # Асинхронные операции
 aiohttp==3.9.1
+asyncio
 
 # Логирование и утилиты
 requests==2.31.0
