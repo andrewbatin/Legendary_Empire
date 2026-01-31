@@ -1,0 +1,58 @@
+# Виртуальное окружение
+venv/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# БД
+*.db
+*.sqlite
+*.sqlite3
+legendary_empire.db
+
+# Переменные окружения
+.env
+.env.local
+.env.*.local
+
+# Логи
+logs/
+*.log
+bot.log
+
+# БД экспорты
+legendary_empire_db_*.json
+
+# Временные файлы
+*.tmp
+*.temp
+.cache/
