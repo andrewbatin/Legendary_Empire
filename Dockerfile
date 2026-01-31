@@ -1,30 +1,20 @@
-# Использовать официальный образ Python
 FROM python:3.11-slim
 
-# Установить рабочую директорию
 WORKDIR /app
 
-# Установить системные зависимости
-RUN apt-get update && apt-get install -y \
-    && rm -rf /var/lib/apt/lists/*
-
-# Скопировать файл требований
+# Установка зависимостей
 COPY requirements.txt .
-
-# Установить Python зависимости
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Скопировать код приложения
+# Копирование кода
 COPY . .
 
-# Render port
+# Render порт (ОБЯЗАТЕЛЬНО 10000)
 EXPOSE 10000
 
-# Создать директорию для логов
-RUN mkdir -p logs
+# Создание папки для логов
+RUN mkdir -p /app/logs
 
-# Установить переменные окружения
 ENV PYTHONUNBUFFERED=1
 
-# Запустить бота
 CMD ["python", "bot.py"]
