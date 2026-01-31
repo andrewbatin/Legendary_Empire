@@ -9,6 +9,9 @@ import os
 import json
 import random
 import sqlite3
+# Render.com webhook support
+import uvicorn  # если используете FastAPI wrapper
+
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
@@ -686,54 +689,29 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # ============= MAIN =============
 
 def main():
-    """Запуск бота"""
+    """Запуск бота с webhook для Render/Heroku"""
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # ConversationHandler
+    # Все handlers (уже есть в коде)
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
-        states={
-            AWAITING_SUBSCRIPTION: [
-                CallbackQueryHandler(handle_subscription_check, pattern="check_subscription")
-            ],
-            AWAITING_NICKNAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_nickname_input),
-                CallbackQueryHandler(continue_to_game, pattern="continue_game"),
-                CallbackQueryHandler(admin_menu, pattern="admin_menu"),
-            ],
-            IN_GAME: [
-                CallbackQueryHandler(handle_cell_click, pattern="^cell_"),
-                CallbackQueryHandler(continue_to_game, pattern="continue_game"),
-                CallbackQueryHandler(admin_menu, pattern="admin_menu"),
-                CallbackQueryHandler(back_to_game, pattern="back_to_game"),
-            ],
-            ADMIN_MENU: [
-                CallbackQueryHandler(admin_download_db, pattern="download_db"),
-                CallbackQueryHandler(admin_users_stats, pattern="admin_users"),
-                CallbackQueryHandler(back_to_game, pattern="back_to_game"),
-            ],
-            ADMIN_USERS: [
-                CallbackQueryHandler(admin_menu, pattern="admin_menu"),
-            ],
-        },
-        fallbacks=[CommandHandler("start", start)],
+        # ... ваш существующий ConversationHandler ...
     )
     
     application.add_handler(conv_handler)
     application.add_error_handler(error_handler)
     
     logger.info("🚀 Legendary Empire Bot запущен!")
-
+    
+    # 🔥 WEBHOOK ДЛЯ RENDER (критично!)
+    PORT = int(os.environ.get('PORT', 8080))
+    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost:8080')}/{BOT_TOKEN}"
+    
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path=BOT_TOKEN,
+        webhook_url=webhook_url
+    )
 
 if __name__ == "__main__":
     main()
-    
-import os
-PORT = int(os.environ.get('PORT', 8080))
-
-application.run_webhook(
-    listen="0.0.0.0",
-    port=PORT,
-    url_path=BOT_TOKEN,
-    webhook_url=f"https://legendary-empire.onrender.com/{BOT_TOKEN}"
-)
