@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Скопировать код приложения
 COPY . .
 
+# Render port
+EXPOSE 10000
+
 # Создать директорию для логов
 RUN mkdir -p logs
 
