@@ -726,11 +726,11 @@ def main():
     import os
 PORT = int(os.environ.get('PORT', 8080))
 
-app.run_webhook(
+application.run_webhook(
     listen="0.0.0.0",
     port=PORT,
     url_path=BOT_TOKEN,
-    webhook_url=f"https://legendary-empire-bot-xxxx.onrender.com/{BOT_TOKEN}"
+    webhook_url=f"https://legendary-empire.onrender.com/{BOT_TOKEN}"
 )
 
 if __name__ == "__main__":
