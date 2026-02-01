@@ -1,723 +1,145 @@
-"""
-Legendary Empire ⚔️ - Telegram Game Bot
-Полнофункциональный чат-бот для игры в строительство замков
-Версия: 1.0
-"""
-
 import logging
-import os
-import json
-import random
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, Filters, CallbackContext
 import sqlite3
-# Render.com webhook support
-# import uvicorn  # если используете FastAPI wrapper
-
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Tuple
-from pathlib import Path
-
-from dotenv import load_dotenv
-from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ChatMember, ChatMemberStatus
-)
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ConversationHandler, filters, ContextTypes
-)
-from telegram.error import TelegramError
-
-# ============= КОНФИГУРАЦИЯ =============
-
-load_dotenv()
-
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "-1001234567890"))
-ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "Yegorian_the_first")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./legendary_empire.db")
+import random
 
 # Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    handlers=[
-        logging.FileHandler('bot.log'),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Состояния для ConversationHandler
-(
-    AWAITING_SUBSCRIPTION,
-    AWAITING_NICKNAME,
-    IN_GAME,
-    ADMIN_MENU,
-    ADMIN_USERS
-) = range(5)
+# Соединяемся с базой данных SQLite
+conn = sqlite3.connect('legendary_empire.db', check_same_thread=False)
+cursor = conn.cursor()
 
-# ============= БАЗА ДАННЫХ =============
+# Инициализируем таблицу пользователей
+def init_db():
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            game_id TEXT UNIQUE,
+            nickname TEXT,
+            registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_active TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            map_state TEXT,
+            resources TEXT,
+            castle_built BOOLEAN DEFAULT FALSE
+        );
+    ''')
+    conn.commit()
 
-class Database:
-    """Управление базой данных SQLite"""
-    
-    def __init__(self, db_path: str = "legendary_empire.db"):
-        self.db_path = db_path
-        self.init_db()
-    
-    def init_db(self):
-        """Инициализация БД и создание таблиц"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Таблица пользователей
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                telegram_id BIGINT UNIQUE,
-                username VARCHAR,
-                game_id VARCHAR UNIQUE,
-                nickname VARCHAR,
-                registration_date TIMESTAMP,
-                last_active TIMESTAMP,
-                is_subscribed BOOLEAN DEFAULT 0,
-                game_state VARCHAR DEFAULT 'IDLE',
-                castle_built BOOLEAN DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Таблица ресурсов
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS resources (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INT UNIQUE,
-                stones INT DEFAULT 20,
-                coins INT DEFAULT 50,
-                wood INT DEFAULT 20,
-                diamonds INT DEFAULT 1,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            )
-        ''')
-        
-        # Таблица игровых карт
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS game_maps (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INT,
-                map_data TEXT,
-                visited_cells TEXT DEFAULT '[]',
-                started_at TIMESTAMP,
-                ended_at TIMESTAMP,
-                is_won BOOLEAN DEFAULT 0,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        logger.info("✅ БД инициализирована")
-    
-    def get_connection(self):
-        """Получить соединение с БД"""
-        return sqlite3.connect(self.db_path)
-    
-    def add_user(self, telegram_id: int, username: str, nickname: str, game_id: str) -> int:
-        """Добавить нового пользователя"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        try:
-            cursor.execute('''
-                INSERT INTO users 
-                (telegram_id, username, nickname, game_id, registration_date, last_active, is_subscribed, game_state)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (telegram_id, username, nickname, game_id, datetime.now(), datetime.now(), 1, 'REGISTERED'))
-            
-            conn.commit()
-            user_id = cursor.lastrowid
-            
-            # Добавить ресурсы
-            cursor.execute('''
-                INSERT INTO resources (user_id, stones, coins, wood, diamonds)
-                VALUES (?, 20, 50, 20, 1)
-            ''', (user_id,))
-            
-            conn.commit()
-            logger.info(f"✅ Пользователь {nickname} (#{game_id}) добавлен")
-            return user_id
-        except sqlite3.IntegrityError:
-            logger.error(f"❌ Пользователь {telegram_id} уже существует")
-            return -1
-        finally:
-            conn.close()
-    
-    def get_user(self, telegram_id: int) -> Optional[Dict]:
-        """Получить пользователя по Telegram ID"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM users WHERE telegram_id = ?', (telegram_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return {
-                'id': row[0],
-                'telegram_id': row[1],
-                'username': row[2],
-                'game_id': row[3],
-                'nickname': row[4],
-                'registration_date': row[5],
-                'last_active': row[6],
-                'is_subscribed': row[7],
-                'game_state': row[8],
-                'castle_built': row[9]
-            }
-        return None
-    
-    def get_next_game_id(self) -> str:
-        """Получить следующий ID игрока"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT COUNT(*) FROM users')
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        return f"#{count + 1:05d}"
-    
-    def get_total_users(self) -> int:
-        """Получить количество всех пользователей"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT COUNT(*) FROM users')
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        return count
-    
-    def get_active_today(self) -> int:
-        """Получить количество активных пользователей за день"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        one_day_ago = datetime.now() - timedelta(days=1)
-        cursor.execute(
-            'SELECT COUNT(*) FROM users WHERE last_active > ?',
-            (one_day_ago,)
-        )
-        count = cursor.fetchone()[0]
-        conn.close()
-        
-        return count
-    
-    def update_game_state(self, telegram_id: int, state: str):
-        """Обновить состояние игры"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            'UPDATE users SET game_state = ?, last_active = ? WHERE telegram_id = ?',
-            (state, datetime.now(), telegram_id)
-        )
-        
-        conn.commit()
-        conn.close()
-    
-    def save_map(self, user_id: int, map_data: List[List[str]]):
-        """Сохранить карту"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        map_json = json.dumps(map_data)
-        cursor.execute(
-            'INSERT INTO game_maps (user_id, map_data, started_at) VALUES (?, ?, ?)',
-            (user_id, map_json, datetime.now())
-        )
-        
-        conn.commit()
-        conn.close()
-    
-    def get_map(self, user_id: int) -> Optional[List[List[str]]]:
-        """Получить карту"""
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            'SELECT map_data FROM game_maps WHERE user_id = ? ORDER BY started_at DESC LIMIT 1',
-            (user_id,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return json.loads(row[0])
-        return None
-    
-    def export_db(self, filename: str = None) -> str:
-        """Экспортировать БД в JSON"""
-        if not filename:
-            filename = f"legendary_empire_db_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('SELECT * FROM users')
-        users = cursor.fetchall()
-        
-        cursor.execute('SELECT * FROM resources')
-        resources = cursor.fetchall()
-        
-        cursor.execute('SELECT * FROM game_maps')
-        maps = cursor.fetchall()
-        
-        conn.close()
-        
-        export_data = {
-            'exported_at': datetime.now().isoformat(),
-            'users_count': len(users),
-            'resources_count': len(resources),
-            'maps_count': len(maps),
-            'data': {
-                'users': users,
-                'resources': resources,
-                'maps': maps
-            }
-        }
-        
-        with open(filename, 'w', encoding='utf-8') as f:
-            json.dump(export_data, f, ensure_ascii=False, indent=2)
-        
-        logger.info(f"✅ БД экспортирована в {filename}")
-        return filename
+# Генерируем уникальную карту
+def generate_map():
+    tiles = ['🌳', '🏜️', '🏔️', '🌋', '🌊', '🌱']  # Элементы карты
+    size = 10
+    return [[random.choice(tiles) for _ in range(size)] for _ in range(size)]
 
-# ============= ИНИЦИАЛИЗАЦИЯ БД =============
+# Сохраняем состояние карты
+def save_map_state(user_id, map_state):
+    cursor.execute("UPDATE users SET map_state=? WHERE user_id=?", (repr(map_state), user_id))
+    conn.commit()
 
-db = Database("legendary_empire.db")
+# Получаем сохранённое состояние карты
+def load_map_state(user_id):
+    cursor.execute("SELECT map_state FROM users WHERE user_id=?", (user_id,))
+    state = cursor.fetchone()
+    return eval(state[0]) if state else None
 
-# ============= УТИЛИТЫ =============
+# Получаем начальные ресурсы
+def get_start_resources():
+    return {'stones': 20, 'coins': 50, 'trees': 20, 'diamonds': 1}
 
-def validate_nickname(nickname: str) -> Tuple[bool, str]:
-    """Проверить корректность имени"""
-    if len(nickname) < 2:
-        return False, "❌ Имя должно быть минимум 2 символа"
-    if len(nickname) > 15:
-        return False, "❌ Имя должно быть максимум 15 символов"
-    return True, ""
+# Основные команды и реакции бота
 
-def generate_map() -> List[List[str]]:
-    """Генерировать 10x10 карту"""
-    terrains = ['🌳', '🏜️', '🏔️', '🌋', '🌊', '🌱']
-    map_data = [[None for _ in range(10)] for _ in range(10)]
-    
-    # Разместить минимум 1 каждого типа
-    used_positions = set()
-    for terrain in terrains:
-        while True:
-            row, col = random.randint(0, 9), random.randint(0, 9)
-            if (row, col) not in used_positions:
-                map_data[row][col] = terrain
-                used_positions.add((row, col))
-                break
-    
-    # Заполнить остальные случайно
-    for row in range(10):
-        for col in range(10):
-            if map_data[row][col] is None:
-                map_data[row][col] = random.choice(terrains)
-    
-    return map_data
-
-def format_map_buttons(user_map: List[List[str]]) -> InlineKeyboardMarkup:
-    """Форматировать карту в кнопки"""
-    buttons = []
-    
-    for row in range(10):
-        row_buttons = []
-        for col in range(10):
-            terrain = user_map[row][col]
-            button = InlineKeyboardButton(
-                text=terrain,
-                callback_data=f"cell_{row}_{col}"
-            )
-            row_buttons.append(button)
-        buttons.append(row_buttons)
-    
-    return InlineKeyboardMarkup(buttons)
-
-async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    """Проверить подписку на канал"""
-    try:
-        member = await context.bot.get_chat_member(CHANNEL_ID, user_id)
-        return member.status in [
-            ChatMemberStatus.CREATOR,
-            ChatMemberStatus.ADMINISTRATOR,
-            ChatMemberStatus.MEMBER
-        ]
-    except TelegramError as e:
-        logger.warning(f"⚠️ Ошибка проверки подписки: {e}")
-        return False
-
-# ============= ОБРАБОТЧИКИ =============
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработчик /start"""
+# Начало игры (/start)
+def start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    
-    # Проверить существующего пользователя
-    existing_user = db.get_user(user_id)
-    if existing_user and existing_user['game_state'] == 'REGISTERED':
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Далее ▶️", callback_data="continue_game")]
-        ])
-        await update.message.reply_text(
-            f"👋 С возвращением, {existing_user['nickname']}! ({existing_user['game_id']})",
-            reply_markup=keyboard
-        )
-        return IN_GAME
-    
-    # Новый пользователь - запросить подписку
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Подтвердить ✅", callback_data="check_subscription")]
-    ])
-    
-    await update.message.reply_text(
-        "Подпишитесь на официальный канал бота (ссылка на канал)\n"
-        "https://t.me/+TCIZb5BW1wMzMDMy для начала.",
-        reply_markup=keyboard
-    )
-    
-    return AWAITING_SUBSCRIPTION
-
-async def handle_subscription_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Проверка подписки"""
-    user_id = update.effective_user.id
-    query = update.callback_query
-    
-    await query.answer()
-    
-    is_subscribed = await check_subscription(user_id, context)
-    
-    if not is_subscribed:
-        await query.edit_message_text("Ты не пройдёшь!☝️")
-        return AWAITING_SUBSCRIPTION
-    
-    # Пользователь подписан
-    await query.edit_message_text(
-        "Приветствую! 👋🏻\n"
-        "Для того, чтобы начать прохождение введите свое игровое имя ✍🏻"
-    )
-    
-    return AWAITING_NICKNAME
-
-async def handle_nickname_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка ввода имени"""
-    user_id = update.effective_user.id
-    username = update.effective_user.username or "unknown"
-    nickname = update.message.text.strip()
-    
-    # Валидация
-    is_valid, error_msg = validate_nickname(nickname)
-    
-    if not is_valid:
-        await update.message.reply_text(f"{error_msg}\n\nПожалуйста, введите имя (2-15 символов):")
-        return AWAITING_NICKNAME
-    
-    # Проверить существование
-    existing = db.get_user(user_id)
-    if existing:
-        await update.message.reply_text("❌ Вы уже зарегистрированы!")
-        return IN_GAME
-    
-    # Создать пользователя
-    game_id = db.get_next_game_id()
-    user_db_id = db.add_user(user_id, username, nickname, game_id)
-    
-    if user_db_id == -1:
-        await update.message.reply_text("❌ Ошибка регистрации. Попробуйте еще раз.")
-        return AWAITING_NICKNAME
-    
-    # Сохранить info в context
-    context.user_data['user_db_id'] = user_db_id
-    context.user_data['nickname'] = nickname
-    context.user_data['game_id'] = game_id
-    
-    # Регистрационное сообщение
-    message = (
-        f"Успешно! ✨\n\n"
-        f"Ваше имя: {nickname}\n"
-        f"Ваш номер: {game_id}\n\n"
-        f"Стартовый набор ресурсов:\n"
-        f"20 камней 🪨\n"
-        f"50 монет 💰\n"
-        f"20 деревьев 🪵\n"
-        f"1 алмаз 💎"
-    )
-    
-    # Кнопки
-    buttons = [[InlineKeyboardButton("Далее ▶️", callback_data="continue_game")]]
-    
-    # Добавить админ-панель если админ
-    if update.effective_user.username == ADMIN_USERNAME:
-        buttons.append([InlineKeyboardButton("Админ-панель 💻", callback_data="admin_menu")])
-    
-    keyboard = InlineKeyboardMarkup(buttons)
-    
-    await update.message.reply_text(message, reply_markup=keyboard)
-    
-    db.update_game_state(user_id, 'REGISTERED')
-    
-    return AWAITING_NICKNAME
-
-async def continue_to_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Переход в игру"""
-    user_id = update.effective_user.id
-    query = update.callback_query
-    
-    await query.answer()
-    
-    # Получить пользователя
-    user = db.get_user(user_id)
-    if not user:
-        await query.edit_message_text("❌ Ошибка: пользователь не найден")
-        return AWAITING_NICKNAME
-    
-    # Генерировать карту
-    game_map = generate_map()
-    db.save_map(user['id'], game_map)
-    
-    db.update_game_state(user_id, 'IN_GAME')
-    
-    # Отправить карту
-    await query.edit_message_text(
-        "Это карта 🗺️\n"
-        "Нажмите на клетку, и откроется локальная карта. "
-        "На ней вы должны построить свой замок 🏰",
-        reply_markup=format_map_buttons(game_map)
-    )
-    
-    context.user_data['game_map'] = game_map
-    
-    return IN_GAME
-
-async def handle_cell_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Обработка клика по клетке"""
-    user_id = update.effective_user.id
-    query = update.callback_query
-    
-    await query.answer()
-    
-    # Парсить координаты
-    parts = query.data.split("_")
-    if len(parts) != 3:
-        return IN_GAME
-    
-    row, col = int(parts[1]), int(parts[2])
-    
-    # Получить карту из context
-    if 'game_map' not in context.user_data:
-        user = db.get_user(user_id)
-        context.user_data['game_map'] = db.get_map(user['id'])
-    
-    game_map = context.user_data['game_map']
-    terrain = game_map[row][col]
-    
-    # Ответы
-    responses = {
-        '🌳': {
-            'message': (
-                "🏰 Поздравляю 🥳!\n"
-                "Вы построили замок 🏰, не искупаысь в лаве 🌋, "
-                "не умерев от кактуса 🌵, не упав с горы 🏔️, "
-                "не потонув в луже 🌊, не став обедом у ростка 🌱 размером 1 мм!"
-            ),
-            'is_win': True,
-            'new_emoji': '🏰'
-        },
-        '🌋': {
-            'message': "☠️ Вы поплавали в лаве 🌋",
-            'is_win': False
-        },
-        '🏜️': {
-            'message': (
-                "💀 Вы умерли от страшной раны, которую можно разглядеть "
-                "только через супер-микроскоп. Эту рану вам нанёс кактус 🌵"
-            ),
-            'is_win': False
-        },
-        '🏔️': {
-            'message': "🪨 Кажется вы полетали с вершины горы...",
-            'is_win': False
-        },
-        '🌱': {
-            'message': "🌱 Вас съел росток размером в 1 мм",
-            'is_win': False
-        },
-        '🌊': {
-            'message': "🌊 Вы затонули в луже",
-            'is_win': False
-        }
-    }
-    
-    response = responses.get(terrain, {'message': 'Unknown', 'is_win': False})
-    
-    if response['is_win']:
-        game_map[row][col] = response['new_emoji']
-        db.update_game_state(user_id, 'WON')
-        await query.edit_message_text(response['message'])
-        return IN_GAME
+    cursor.execute("SELECT COUNT(*) FROM users WHERE user_id=?", (user_id,))
+    count = cursor.fetchone()[0]
+    if count > 0:
+        update.message.reply_text("Вы уже зарегистрированы!")
     else:
-        await query.edit_message_text(
-            response['message'] + "\n\n✨ Попробуйте еще раз:",
-            reply_markup=format_map_buttons(game_map)
-        )
-        return IN_GAME
+        buttons = [[InlineKeyboardButton("Начать ⭐", callback_data="start_game")]]
+        markup = InlineKeyboardMarkup(buttons)
+        update.message.reply_text("Добро пожаловать в легендарную империю!\nНачнем приключение?", reply_markup=markup)
 
-# ============= АДМИН-ПАНЕЛЬ =============
-
-async def admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Главное меню админа"""
-    query = update.callback_query
-    
-    await query.answer()
-    
-    if update.effective_user.username != ADMIN_USERNAME:
-        await query.edit_message_text("❌ Недостаточно прав!")
-        return IN_GAME
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Скачать БД 📥", callback_data="download_db")],
-        [InlineKeyboardButton("Пользователи 👤", callback_data="admin_users")],
-        [InlineKeyboardButton("Назад ◀️", callback_data="back_to_game")]
-    ])
-    
-    await query.edit_message_text(
-        "Панель Администратора 💻",
-        reply_markup=keyboard
-    )
-    
-    return ADMIN_MENU
-
-async def admin_download_db(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Скачивание БД"""
-    query = update.callback_query
+# Выбор игрового имени
+def set_nickname(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
-    
-    if update.effective_user.username != ADMIN_USERNAME:
-        await query.answer("❌ Недостаточно прав!", show_alert=True)
-        return ADMIN_MENU
-    
-    await query.answer()
-    
-    # Экспортировать БД
-    filename = db.export_db()
-    
-    try:
-        with open(filename, 'rb') as f:
-            await context.bot.send_document(
-                chat_id=user_id,
-                document=f,
-                filename=filename
-            )
-        
-        await query.edit_message_text("✅ БД скачана!")
-    except Exception as e:
-        logger.error(f"❌ Ошибка при скачивании БД: {e}")
-        await query.edit_message_text(f"❌ Ошибка: {e}")
-    finally:
-        if os.path.exists(filename):
-            os.remove(filename)
-    
-    return ADMIN_MENU
+    nickname = update.message.text.strip()
+    if len(nickname) < 2 or len(nickname) > 15:
+        update.message.reply_text("Имя должно быть длиной от 2 до 15 символов. Повторите попытку.")
+        return
+    cursor.execute("UPDATE users SET nickname=? WHERE user_id=?", (nickname, user_id))
+    conn.commit()
+    update.message.reply_text(f"Приветствуем тебя, {nickname}, начинай исследовать мир!")
 
-async def admin_users_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Статистика пользователей"""
-    query = update.callback_query
-    
-    await query.answer()
-    
-    total_users = db.get_total_users()
-    active_today = db.get_active_today()
-    
-    message = (
-        f"Всего игроков: {total_users}👤\n"
-        f"Активных сегодня: {active_today}👨‍💻"
-    )
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Назад ◀️", callback_data="admin_menu")]
-    ])
-    
-    await query.edit_message_text(message, reply_markup=keyboard)
-    
-    return ADMIN_USERS
-
-async def back_to_game(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Возврат в игру"""
+# Отображаем карту
+def show_map(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
+    map_state = load_map_state(user_id)
+    if not map_state:
+        map_state = generate_map()
+        save_map_state(user_id, map_state)
+    keyboard = []
+    for i in range(len(map_state)):
+        row_buttons = []
+        for j in range(len(map_state[i])):
+            button_text = f'{i}-{j}'
+            row_buttons.append(InlineKeyboardButton(button_text, callback_data=f'cell_{button_text}'))
+        keyboard.append(row_buttons)
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("Это твоя карта 🗺️. Нажми на клетку, чтобы сделать ход.", reply_markup=reply_markup)
+
+# Обрабатываем выбор клетки на карте
+def select_cell(update: Update, context: CallbackContext):
     query = update.callback_query
-    
-    await query.answer()
-    
-    user = db.get_user(user_id)
-    if not user:
-        await query.edit_message_text("❌ Ошибка")
-        return IN_GAME
-    
-    if 'game_map' not in context.user_data:
-        context.user_data['game_map'] = db.get_map(user['id'])
-    
-    game_map = context.user_data['game_map']
-    
-    await query.edit_message_text(
-        "Это карта 🗺️\n"
-        "Нажмите на клетку для продолжения:",
-        reply_markup=format_map_buttons(game_map)
-    )
-    
-    return IN_GAME
+    user_id = query.from_user.id
+    coords = query.data.split('_')[-1].split('-')
+    x, y = int(coords[0]), int(coords[1])
+    map_state = load_map_state(user_id)
+    terrain_type = map_state[x][y]
+    results = {
+        '🌳': "Поздравляю 🥳! Вы построили замок 🏰.",
+        '🏜️': "Вы умерли от странной раны от кактуса 🌵.",
+        '🏔️': "Вы погибли, упав с высоты горы 🏔️.",
+        '🌋': "Вы сгорели в лаве 🌋.",
+        '🌊': "Вы утонули в океане 🌊.",
+        '🌱': "Вас съел маленький росток 🌱."
+    }
+    response = results.get(terrain_type, "Что-то пошло не так 😕")
+    query.answer(response)
+    query.edit_message_text(response)
 
-# ============= ОБРАБОТЧИК ОШИБОК =============
+# Администрирование (показ статистики)
+def admin_stats(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    if user_id != 8304713213  # Замените YOUR_ADMIN_USER_ID вашим настоящим ID
+        update.message.reply_text("Только администраторы имеют доступ.")
+        return
+    cursor.execute("SELECT COUNT(*) FROM users")
+    total_users = cursor.fetchone()[0]
+    update.message.reply_text(f"Количество зарегистрированных пользователей: {total_users}")
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Логирование ошибок"""
-    logger.error(msg="Exception while handling an update:", exc_info=context.error)
-
-# ============= MAIN =============
-
+# Конструктор бота
 def main():
-    """Запуск бота с webhook для Render/Heroku"""
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    # Все handlers (уже есть в коде)
-    conv_handler = ConversationHandler(
-        # ... ваш существующий ConversationHandler ...
-    )
-    
-    application.add_handler(conv_handler)
-    application.add_error_handler(error_handler)
-    
-    logger.info("🚀 Legendary Empire Bot запущен!")
-    
-    # 🔥 WEBHOOK ДЛЯ RENDER (критично!)
-    PORT = int(os.environ.get('PORT', 8080))
-    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'localhost:8080')}/{BOT_TOKEN}"
-    
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=webhook_url
-    )
+    TOKEN = "8066566128:AAGu7ipZd21dF7Bpqw7w6N8YuDWzRDbhL14"  # Здесь вставьте токен вашего бота
+    updater = Updater(token=TOKEN, use_context=True)
+    dp = updater.dispatcher
 
-if __name__ == "__main__":
-    PORT = int(os.environ.get("PORT", 10000))  # Render default
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=BOT_TOKEN,
-        webhook_url=f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}/{BOT_TOKEN}"
-    )
+    # Командные хэндлеры
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(MessageHandler(Filters.text & (~Filters.command), set_nickname))  # Установка имени
+    dp.add_handler(CommandHandler("show_map", show_map))  # Показать карту
+    dp.add_handler(CallbackQueryHandler(select_cell, pattern=r'^cell_[0-9]+-[0-9]+$'))  # Обработка выбора клетки
+    dp.add_handler(CommandHandler("stats", admin_stats))  # Статистика для администратора
+
+    # Логирование и запуск
+    logger.info("Bot started successfully.")
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == '__main__':
+    init_db()  # Инициализация базы данных перед запуском
+    main()
